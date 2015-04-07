@@ -96,24 +96,13 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	ZeroMemory(&descHeap, sizeof(descHeap));
 	descHeap.NumDescriptors = 1;
 	descHeap.Type = D3D12_RTV_DESCRIPTOR_HEAP;
-	ID3D12DescriptorHeap* pDescriptorHeap[2] = { nullptr };
-	hr = gpDevice->CreateDescriptorHeap(&descHeap, __uuidof(ID3D12DescriptorHeap), (void**)&pDescriptorHeap[0]);
-	descHeap.Type = D3D12_CBV_SRV_UAV_DESCRIPTOR_HEAP;
-	descHeap.Flags = D3D12_DESCRIPTOR_HEAP_SHADER_VISIBLE;
-	hr = gpDevice->CreateDescriptorHeap(&descHeap, __uuidof(ID3D12DescriptorHeap), (void**)&pDescriptorHeap[1]);
+	descHeap.Flags = D3D12_DESCRIPTOR_HEAP_NONE;
+	ID3D12DescriptorHeap* pDescriptorHeap = nullptr;
+	hr = gpDevice->CreateDescriptorHeap(&descHeap, __uuidof(ID3D12DescriptorHeap), (void**)&pDescriptorHeap);
 
 
-	D3D12_ROOT_PARAMETER rootParameter[4];
-	D3D12_DESCRIPTOR_RANGE DescriptorRange[2];
 	ID3D12RootSignature* pRootSignature = nullptr;
-	DescriptorRange[0].Init(D3D12_DESCRIPTOR_RANGE_SAMPLER, 2, 0);
-	DescriptorRange[1].Init(D3D12_DESCRIPTOR_RANGE_SRV, 5, 2);
-	rootParameter[0].InitAsDescriptorTable(1, &DescriptorRange[0]);
-	rootParameter[1].InitAsDescriptorTable(1, &DescriptorRange[1]);
-	rootParameter[2].InitAsConstantBufferView(7);
-	rootParameter[3].InitAsConstants(1, 0);
-	D3D12_ROOT_SIGNATURE rootSignature;
-	rootSignature.Init(4, rootParameter);
+	D3D12_ROOT_SIGNATURE rootSignature = D3D12_ROOT_SIGNATURE();
 	rootSignature.Flags = D3D12_ROOT_SIGNATURE_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 	ID3DBlob* pRootSigBlob = nullptr;
 	ID3DBlob* pErrorBlob = nullptr;
@@ -137,16 +126,16 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	descPso.InputLayout.pInputElementDescs = &descInputElement;
 	descPso.InputLayout.NumElements = 1;
 	descPso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+	descPso.RasterizerState = CD3D12_RASTERIZER_DESC(D3D12_DEFAULT);
 	ID3D12PipelineState* pPipelineState = nullptr;
 	hr = gpDevice->CreateGraphicsPipelineState(&descPso, __uuidof(ID3D12PipelineState), (void**)&pPipelineState);
 
 	ID3D12GraphicsCommandList* pCommandList = nullptr;
 	hr = gpDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocators[0].Get()/*pCommandListAllocator*/, pPipelineState, __uuidof(ID3D12GraphicsCommandList), (void**)&pCommandList);
-	pCommandList->SetDescriptorHeaps(&pDescriptorHeap[1], 1);
 
 	ID3D12Resource* pRenderTarget = nullptr;
 	hr = pSwapChain->GetBuffer(0, __uuidof(ID3D12Resource), (void**)&pRenderTarget);
-	D3D12_CPU_DESCRIPTOR_HANDLE cpuDescriptor = pDescriptorHeap[0]->GetCPUDescriptorHandleForHeapStart();
+	D3D12_CPU_DESCRIPTOR_HANDLE cpuDescriptor = pDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
 	gpDevice->CreateRenderTargetView(pRenderTarget, NULL, cpuDescriptor);
 
 	float clearColor[4] = { 0,1.0f,1.0f,0 };
@@ -207,9 +196,8 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	pRootSigBlob->Release();
 	pRenderTarget->Release();
 	pPipelineState->Release();
+	pDescriptorHeap->Release();
 	pCommandList->Release();
-	pDescriptorHeap[0]->Release();
-	pDescriptorHeap[1]->Release();
 	pSwapChain->Release();
 	pCommandQueue->Release();
 	dxgiFactory->Release();
