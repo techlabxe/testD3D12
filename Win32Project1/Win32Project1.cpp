@@ -23,11 +23,14 @@ TCHAR szWindowClass[MAX_LOADSTRING];			// the main window class name
 ATOM				MyRegisterClass(HINSTANCE hInstance);
 BOOL				InitInstance(HINSTANCE, int);
 LRESULT CALLBACK	WndProc(HWND, UINT, WPARAM, LPARAM);
+void                WaitForCommandQueue(ID3D12CommandQueue*);
 
 HWND gHwnd;
-ID3D12Device* gpDevice = nullptr;
+HANDLE hFenceEvent;
 using namespace Microsoft::WRL;
 ComPtr<ID3D12Device> dxDevice;
+ComPtr<ID3D12Fence>  queueFence;
+
 int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
                      _In_ LPTSTR    lpCmdLine,
@@ -59,24 +62,25 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	fread(pVSBlob, 1, vssize, fp);
 	fclose(fp);
 
-	ID3D12CommandQueue* pCommandQueue = nullptr;
-	ComPtr<ID3D12CommandAllocator> commandAllocators[2];
+	ComPtr<ID3D12CommandQueue> commandQueue;
+	ComPtr<ID3D12CommandAllocator> commandAllocator;
 
 	hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_WIN32PROJECT1));
 	HRESULT hr;
-	IDXGIFactory2* dxgiFactory = nullptr;
-	hr = CreateDXGIFactory2( 0, __uuidof(IDXGIFactory2), (void**)&dxgiFactory);
+	ComPtr<IDXGIFactory2> dxgiFactory;
+	hr = CreateDXGIFactory2( 0, IID_PPV_ARGS(dxgiFactory.GetAddressOf()) );
 
-	hr = D3D12CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, D3D12_CREATE_DEVICE_DEBUG, D3D_FEATURE_LEVEL_11_1, D3D12_SDK_VERSION, __uuidof(ID3D12Device), (void**)&gpDevice);
-	dxDevice.Attach(gpDevice);
-	hr = gpDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, __uuidof(ID3D12CommandAllocator), (LPVOID*)&commandAllocators[0]);
-	hr = gpDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, __uuidof(ID3D12CommandAllocator), (LPVOID*)&commandAllocators[1]);
+	hr = D3D12CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, D3D12_CREATE_DEVICE_DEBUG, D3D_FEATURE_LEVEL_11_1, D3D12_SDK_VERSION, IID_PPV_ARGS( dxDevice.GetAddressOf()));
+	hr = dxDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS( commandAllocator.GetAddressOf()) );
+
 	D3D12_COMMAND_QUEUE_DESC descCommandQueue;
 	ZeroMemory(&descCommandQueue, sizeof(descCommandQueue) );
 	descCommandQueue.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 	descCommandQueue.Priority = 0;
 	descCommandQueue.Flags = D3D12_COMMAND_QUEUE_NONE;
-	hr = gpDevice->CreateCommandQueue( &descCommandQueue, __uuidof(ID3D12CommandQueue), (void**)&pCommandQueue);
+	hr = dxDevice->CreateCommandQueue(&descCommandQueue, IID_PPV_ARGS(commandQueue.GetAddressOf()));
+	hFenceEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+	hr = dxDevice->CreateFence(0, D3D12_FENCE_MISC_NONE, IID_PPV_ARGS(queueFence.GetAddressOf()));
 
 	DXGI_SWAP_CHAIN_DESC swapChainDesc;
 	ZeroMemory(&swapChainDesc, sizeof(swapChainDesc));
@@ -87,27 +91,26 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	swapChainDesc.SampleDesc.Count = 1;
 	swapChainDesc.Windowed = TRUE;
 	swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
-	IDXGIAdapter* adapter = nullptr;
 
 	IDXGISwapChain* pSwapChain = nullptr;
-	hr = dxgiFactory->CreateSwapChain( pCommandQueue, &swapChainDesc, &pSwapChain);
+	hr = dxgiFactory->CreateSwapChain( commandQueue.Get(), &swapChainDesc, &pSwapChain);
 
+	ComPtr<ID3D12DescriptorHeap> pDescriptorHeap;
 	D3D12_DESCRIPTOR_HEAP_DESC descHeap;
 	ZeroMemory(&descHeap, sizeof(descHeap));
 	descHeap.NumDescriptors = 1;
 	descHeap.Type = D3D12_RTV_DESCRIPTOR_HEAP;
 	descHeap.Flags = D3D12_DESCRIPTOR_HEAP_NONE;
-	ID3D12DescriptorHeap* pDescriptorHeap = nullptr;
-	hr = gpDevice->CreateDescriptorHeap(&descHeap, __uuidof(ID3D12DescriptorHeap), (void**)&pDescriptorHeap);
+	hr = dxDevice->CreateDescriptorHeap(&descHeap, IID_PPV_ARGS(pDescriptorHeap.GetAddressOf()));
 
 
-	ID3D12RootSignature* pRootSignature = nullptr;
+	ComPtr<ID3D12RootSignature> pRootSignature;
 	D3D12_ROOT_SIGNATURE rootSignature = D3D12_ROOT_SIGNATURE();
+	ComPtr<ID3DBlob> pRootSigBlob;
+	ComPtr<ID3DBlob> pErrorBlob;
 	rootSignature.Flags = D3D12_ROOT_SIGNATURE_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-	ID3DBlob* pRootSigBlob = nullptr;
-	ID3DBlob* pErrorBlob = nullptr;
-	hr = D3D12SerializeRootSignature(&rootSignature, D3D_ROOT_SIGNATURE_V1, &pRootSigBlob, &pErrorBlob);
-	hr = gpDevice->CreateRootSignature(1, pRootSigBlob->GetBufferPointer(), pRootSigBlob->GetBufferSize(), __uuidof(ID3D12RootSignature), (void**)&pRootSignature);
+	hr = D3D12SerializeRootSignature(&rootSignature, D3D_ROOT_SIGNATURE_V1, pRootSigBlob.GetAddressOf(), pErrorBlob.GetAddressOf() );
+	hr = dxDevice->CreateRootSignature(1, pRootSigBlob->GetBufferPointer(), pRootSigBlob->GetBufferSize(), IID_PPV_ARGS( pRootSignature.GetAddressOf()) );
 
 	D3D12_INPUT_ELEMENT_DESC  descInputElement =
 		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_PER_VERTEX_DATA, 0 }
@@ -118,7 +121,7 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	descPso.NumRenderTargets = 1;
 	descPso.RasterizerState.CullMode = D3D12_CULL_NONE;
 	descPso.RasterizerState.FillMode = D3D12_FILL_SOLID;
-	descPso.pRootSignature = pRootSignature;
+	descPso.pRootSignature = pRootSignature.Get();
 	descPso.SampleDesc.Count = 1;
 	descPso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 	descPso.VS.BytecodeLength = vssize;
@@ -127,16 +130,16 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	descPso.InputLayout.NumElements = 1;
 	descPso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
 	descPso.RasterizerState = CD3D12_RASTERIZER_DESC(D3D12_DEFAULT);
-	ID3D12PipelineState* pPipelineState = nullptr;
-	hr = gpDevice->CreateGraphicsPipelineState(&descPso, __uuidof(ID3D12PipelineState), (void**)&pPipelineState);
+	ComPtr<ID3D12PipelineState> pPipelineState;
+	hr = dxDevice->CreateGraphicsPipelineState(&descPso, IID_PPV_ARGS(pPipelineState.GetAddressOf()) );
 
-	ID3D12GraphicsCommandList* pCommandList = nullptr;
-	hr = gpDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocators[0].Get()/*pCommandListAllocator*/, pPipelineState, __uuidof(ID3D12GraphicsCommandList), (void**)&pCommandList);
+	ComPtr<ID3D12GraphicsCommandList> pCommandList;
+	hr = dxDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocator.Get(), pPipelineState.Get(), IID_PPV_ARGS(pCommandList.GetAddressOf()) );
 
 	ID3D12Resource* pRenderTarget = nullptr;
 	hr = pSwapChain->GetBuffer(0, __uuidof(ID3D12Resource), (void**)&pRenderTarget);
 	D3D12_CPU_DESCRIPTOR_HANDLE cpuDescriptor = pDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
-	gpDevice->CreateRenderTargetView(pRenderTarget, NULL, cpuDescriptor);
+	dxDevice->CreateRenderTargetView(pRenderTarget, NULL, cpuDescriptor);
 
 	float clearColor[4] = { 0,1.0f,1.0f,0 };
 	D3D12_VIEWPORT viewport;
@@ -148,6 +151,9 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	D3D12_RESOURCE_BARRIER_DESC descBarrier;
 	ZeroMemory(&descBarrier, sizeof(descBarrier));
 	pCommandList->Close();
+
+	hr = commandAllocator->Reset();
+	hr = pCommandList->Reset(commandAllocator.Get(), nullptr);
 
 	// Main message loop:
 	ZeroMemory(&msg, sizeof(msg));
@@ -161,11 +167,7 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 			}
 		}
 		else {
-			static int frame = 0, count = 0;
-			ID3D12CommandAllocator* pAlloc = commandAllocators[frame].Get();
-			pAlloc->Reset();
-			pCommandList->Reset(pAlloc, nullptr);
-
+			static int count = 0;
 			ZeroMemory(&descBarrier, sizeof(descBarrier));
 			descBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 			descBarrier.Transition.pResource = pRenderTarget;
@@ -174,8 +176,8 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 			descBarrier.Transition.StateAfter = D3D12_RESOURCE_USAGE_RENDER_TARGET;
 			pCommandList->ResourceBarrier(1, &descBarrier);
 
-			clearColor[0] = 0.5f * sin(count*0.05f) + 0.5f;
-			clearColor[1] = 0.5f * sin(count*0.10f) + 0.5f;
+			clearColor[0] = (float)(0.5f * sin(count*0.05f) + 0.5f);
+			clearColor[1] = (float)(0.5f * sin(count*0.10f) + 0.5f);
 			pCommandList->RSSetViewports(1, &viewport);
 			pCommandList->ClearRenderTargetView(cpuDescriptor, clearColor, NULL, 0);
 
@@ -184,23 +186,21 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 			pCommandList->ResourceBarrier(1, &descBarrier);
 
 			pCommandList->Close();
-			pCommandQueue->ExecuteCommandLists(1, CommandListCast(&pCommandList));
+			commandQueue->ExecuteCommandLists(1, CommandListCast(pCommandList.GetAddressOf()));
 			pSwapChain->Present(1, 0);
 
-			frame = 1 - frame;
+			WaitForCommandQueue(commandQueue.Get());
+			commandAllocator->Reset();
+			pCommandList->Reset(commandAllocator.Get(), nullptr);
 			count++;
 
 		}
 	}
-	pRootSignature->Release();
-	pRootSigBlob->Release();
 	pRenderTarget->Release();
-	pPipelineState->Release();
-	pDescriptorHeap->Release();
-	pCommandList->Release();
 	pSwapChain->Release();
-	pCommandQueue->Release();
-	dxgiFactory->Release();
+	CloseHandle(hFenceEvent);
+	if (pVSBlob) { free(pVSBlob); }
+
 	return (int) msg.wParam;
 }
 
@@ -295,3 +295,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	return 0;
 }
 
+void WaitForCommandQueue(ID3D12CommandQueue* pCommandQueue) {
+	queueFence->Signal(0);
+	queueFence->SetEventOnCompletion(1, hFenceEvent);
+	pCommandQueue->Signal(queueFence.Get(), 1);
+	WaitForSingleObject(hFenceEvent, INFINITE);
+}
