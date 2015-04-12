@@ -29,6 +29,16 @@ void RenderDX12();
 void TerminateDX12();
 void WaitForCommandQueue();
 
+struct MyVertex {
+    float x, y, z;
+    float r, g, b, a;
+};
+MyVertex triangleVertices[] = {
+    { 0.0f, 0.5f, 0.0f,  1.0f,0.0f,0.0f,1.0f },
+    { 0.45f,-0.5f, 0.0f,  0.0f,1.0f,0.0f,1.0f },
+    { -.45f,-0.5f, 0.0f,  0.0f,0.0f,1.0f,1.0f },
+};
+
 int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
                      _In_ LPTSTR    lpCmdLine,
@@ -183,6 +193,8 @@ HANDLE hFenceEvent;
 
 ComPtr<ID3D12GraphicsCommandList> commandList;
 D3D12_CPU_DESCRIPTOR_HANDLE descriptorRTV; // 従来のRenderTargetViewみたいなもの.
+ComPtr<ID3D12Resource> vertexBuffer;
+D3D12_VERTEX_BUFFER_VIEW vertexView;
 
 void AddResourceBarrier( 
     ID3D12GraphicsCommandList* command, 
@@ -197,7 +209,7 @@ BOOL InitializeDX12()
 	HRESULT hr;
 	D3D12_CREATE_DEVICE_FLAG dxflags = D3D12_CREATE_DEVICE_DEBUG;
 #ifndef _DEBUG
-	dxflags = 0;
+	dxflags = D3D12_CREATE_DEVICE_NONE;
 #endif
 	hr = D3D12CreateDevice(
 		nullptr,
@@ -362,6 +374,35 @@ BOOL ResourceSetupDX12()
 	commandList->Close(); // 後で投入する.
 	commandAllocator->Reset();
 	commandList->Reset(commandAllocator.Get(), nullptr);
+
+    // 頂点データの準備.
+    hr = dxDevice->CreateCommittedResource(
+        &CD3D12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+        D3D12_HEAP_MISC_NONE,
+        &CD3D12_RESOURCE_DESC::Buffer(sizeof(triangleVertices)),
+        D3D12_RESOURCE_USAGE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(vertexBuffer.GetAddressOf())
+        );
+    if (FAILED(hr)){
+        MessageBoxW(NULL, L"CreateCommittedResource() failed.", L"ERROR", MB_OK);
+        return FALSE;
+    }
+    // 頂点データの書き込み
+    void* mapped = nullptr;
+    hr = vertexBuffer->Map(0, nullptr, &mapped);
+    if (SUCCEEDED(hr)) {
+        memcpy(mapped, triangleVertices, sizeof(triangleVertices));
+        vertexBuffer->Unmap(0, nullptr);
+    }
+    if (FAILED(hr)) {
+        MessageBoxW(NULL, L"vertexBuffer->Map() failed.", L"ERROR", MB_OK);
+        return FALSE;
+    }
+    vertexView.BufferLocation = vertexBuffer->GetGPUVirtualAddress();
+    vertexView.StrideInBytes = sizeof(MyVertex);
+    vertexView.SizeInBytes = sizeof(triangleVertices);
+
 	return TRUE;
 }
 
@@ -372,10 +413,18 @@ void RenderDX12()
 	D3D12_VIEWPORT viewPort = { 0.0f, 0.0f, WINDOW_WIDTH, WINDOW_HEIGHT, 0.0f, 1.0f };
 	D3D12_RECT rect = { 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT };
     AddResourceBarrier(commandList.Get(), renderTargetPrimary.Get(), D3D12_RESOURCE_USAGE_PRESENT, D3D12_RESOURCE_USAGE_RENDER_TARGET);
+    commandList->SetGraphicsRootSignature(rootSignature.Get());
+    commandList->SetPipelineState(pipelineState.Get());
 	commandList->RSSetViewports(1, &viewPort);
 	commandList->RSSetScissorRects(1, &rect);
 	commandList->ClearRenderTargetView(descriptorRTV, clearColor, nullptr, 0);
 	commandList->SetRenderTargets(&descriptorRTV, FALSE, 1, nullptr);
+
+    // 頂点データをセット.
+    commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    commandList->SetVertexBuffers(0, &vertexView, 1);
+    commandList->DrawInstanced(3, 1, 0, 0);
+
 
 	// ターゲットをPresent用のリソースとして状態変更.
     AddResourceBarrier(commandList.Get(), renderTargetPrimary.Get(), D3D12_RESOURCE_USAGE_RENDER_TARGET, D3D12_RESOURCE_USAGE_PRESENT );
@@ -397,6 +446,7 @@ void WaitForCommandQueue()
 	WaitForSingleObject(hFenceEvent, INFINITE);
 }
 
+// リソース状態変更のための関数.
 void AddResourceBarrier(
     ID3D12GraphicsCommandList* command,
     ID3D12Resource* pResource,
