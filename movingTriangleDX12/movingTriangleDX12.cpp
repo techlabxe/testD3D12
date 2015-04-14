@@ -408,7 +408,6 @@ void RenderDX12()
     commandList->SetGraphicsRootSignature(rootSignature.Get());
     commandList->SetPipelineState(pipelineState.Get());
     commandList->SetGraphicsRootConstantBufferView(0, constantBuffer->GetGPUVirtualAddress() );
-    commandList->SetGraphicsRootConstantBufferView(0, constantBuffer->GetGPUVirtualAddress() );
     commandList->RSSetViewports(1, &viewPort);
     commandList->RSSetScissorRects(1, &rect);
     commandList->ClearRenderTargetView(descriptorRTV, clearColor, nullptr, 0);
