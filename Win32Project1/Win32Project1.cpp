@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <wrl.h>
 #include <d3d12.h>
-#include <dxgi1_3.h>
+#include <dxgi1_4.h>
 #include <math.h>
 #pragma comment( lib, "d3d12.lib" )
 #pragma comment(lib, "dxgi.lib")
@@ -24,6 +24,7 @@ ATOM				MyRegisterClass(HINSTANCE hInstance);
 BOOL				InitInstance(HINSTANCE, int);
 LRESULT CALLBACK	WndProc(HWND, UINT, WPARAM, LPARAM);
 void                WaitForCommandQueue(ID3D12CommandQueue*);
+void                SetResourceBarrier(ID3D12GraphicsCommandList* commandList, ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after);
 
 HWND gHwnd;
 HANDLE hFenceEvent;
@@ -67,7 +68,7 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 
 	hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_WIN32PROJECT1));
 	HRESULT hr;
-	ComPtr<IDXGIFactory2> dxgiFactory;
+	ComPtr<IDXGIFactory3> dxgiFactory;
 	hr = CreateDXGIFactory2(DXGI_CREATE_FACTORY_DEBUG, IID_PPV_ARGS(dxgiFactory.GetAddressOf()) );
 
     ID3D12Debug* debug = nullptr;
@@ -105,8 +106,8 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
     swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
 	swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
 
-	IDXGISwapChain* pSwapChain = nullptr;
-	hr = dxgiFactory->CreateSwapChain( commandQueue.Get(), &swapChainDesc, &pSwapChain);
+	IDXGISwapChain3* pSwapChain = nullptr;
+	hr = dxgiFactory->CreateSwapChain( commandQueue.Get(), &swapChainDesc, (IDXGISwapChain**)(&pSwapChain));
 
 	ComPtr<ID3D12DescriptorHeap> descriptorHeap;
 	D3D12_DESCRIPTOR_HEAP_DESC descHeap;
@@ -118,7 +119,7 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 
 
 	ComPtr<ID3D12RootSignature> rootSignature;
-	D3D12_ROOT_SIGNATURE_DESC descRootSignature;// = D3D12_ROOT_SIGNATURE();
+	D3D12_ROOT_SIGNATURE_DESC descRootSignature;
 	ZeroMemory(&descRootSignature, sizeof(descRootSignature));
 	ComPtr<ID3DBlob> pRootSigBlob;
 	ComPtr<ID3DBlob> pErrorBlob;
@@ -143,7 +144,6 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	descPipelineState.InputLayout.pInputElementDescs = &descInputElement;
 	descPipelineState.InputLayout.NumElements = 1;
 	descPipelineState.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-	//descPipelineState.RasterizerState = CD3D12_RASTERIZER_DESC(D3D12_DEFAULT);
 	ComPtr<ID3D12PipelineState> pipelineState;
 	hr = dxDevice->CreateGraphicsPipelineState(&descPipelineState, IID_PPV_ARGS(pipelineState.GetAddressOf()) );
 
@@ -167,8 +167,6 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	viewport.Height = 480;
 	viewport.MinDepth = 0;
 	viewport.MaxDepth = 1;
-	D3D12_RESOURCE_BARRIER descBarrier;
-	ZeroMemory(&descBarrier, sizeof(descBarrier));
 
 	// Main message loop:
 	ZeroMemory(&msg, sizeof(msg));
@@ -183,15 +181,13 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 		}
 		else {
 			static int count = 0;
-            int targetIndex = count & 1;
+            int targetIndex = pSwapChain->GetCurrentBackBufferIndex();
 
-            ZeroMemory(&descBarrier, sizeof(descBarrier));
-			descBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-			descBarrier.Transition.pResource = renderTarget[targetIndex].Get();
-			descBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			descBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-			descBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-			commandList->ResourceBarrier(1, &descBarrier);
+            SetResourceBarrier(
+                commandList.Get(), 
+                renderTarget[targetIndex].Get(), 
+                D3D12_RESOURCE_STATE_PRESENT,
+                D3D12_RESOURCE_STATE_RENDER_TARGET);
 
 			// レンダーターゲットのクリア処理.
 			clearColor[0] = (float)(0.5f * sin(count*0.05f) + 0.5f);
@@ -200,9 +196,11 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 			commandList->ClearRenderTargetView( handleRTV[targetIndex], clearColor, NULL, 0);
 
 			// Presentする前の準備.
-			descBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-			descBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-			commandList->ResourceBarrier(1, &descBarrier);
+            SetResourceBarrier(
+                commandList.Get(),
+                renderTarget[targetIndex].Get(),
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_PRESENT);
 
 			commandList->Close();
 
@@ -221,6 +219,7 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	CloseHandle(hFenceEvent);
 	if (pVSBlob) { free(pVSBlob); }
     if (adapter) { adapter->Release(); }
+    if (debug) { debug->Release(); }
 	return (int) msg.wParam;
 }
 
@@ -313,6 +312,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		return DefWindowProc(hWnd, message, wParam, lParam);
 	}
 	return 0;
+}
+
+void SetResourceBarrier(ID3D12GraphicsCommandList* commandList, ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) 
+{
+    D3D12_RESOURCE_BARRIER descBarrier;
+    ZeroMemory(&descBarrier, sizeof(descBarrier));
+    descBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    descBarrier.Transition.pResource = resource;
+    descBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    descBarrier.Transition.StateBefore = before;
+    descBarrier.Transition.StateAfter = after;
+    commandList->ResourceBarrier(1, &descBarrier);
 }
 
 void WaitForCommandQueue(ID3D12CommandQueue* pCommandQueue) {
