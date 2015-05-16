@@ -326,7 +326,7 @@ void OnRender() {
     clearColor[0] = (float)(0.5f * sin(count*0.05f) + 0.5f);
     clearColor[1] = (float)(0.5f * sin(count*0.10f) + 0.5f);
     cmdList->RSSetViewports(1, &viewport);
-    cmdList->ClearRenderTargetView(handleRTV[targetIndex], clearColor, NULL, 0);
+    cmdList->ClearRenderTargetView(handleRTV[targetIndex], clearColor, 0, nullptr );
 
     // Presentする前の準備.
     SetResourceBarrier(
