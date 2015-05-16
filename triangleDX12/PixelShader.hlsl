@@ -5,5 +5,5 @@ struct VSOutput {
 
 float4 main(VSOutput vsout) : SV_TARGET
 {
-	return vsout.Color;
+    return vsout.Color;
 }

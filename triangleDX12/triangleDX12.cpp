@@ -27,7 +27,7 @@ BOOL InitializeDX12();
 BOOL ResourceSetupDX12();
 void RenderDX12();
 void TerminateDX12();
-void WaitForCommandQueue();
+void WaitForCommandQueue(ID3D12CommandQueue* pCommandQueue);
 
 struct MyVertex {
     float x, y, z;
@@ -182,113 +182,140 @@ ShaderObject gPixelShader;
 using namespace Microsoft::WRL;
 ComPtr<ID3D12Device> dxDevice;
 ComPtr<IDXGISwapChain3> swapChain;
-ComPtr<ID3D12CommandAllocator> commandAllocator;
-ComPtr<ID3D12CommandQueue> commandQueue;
-ComPtr<ID3D12Fence> commandFence;
-ComPtr<ID3D12DescriptorHeap> descriptorHeap;
-ComPtr<ID3D12Resource> renderTargetPrimary;
+ComPtr<IDXGIFactory3> dxgiFactory;
+ComPtr<ID3D12CommandAllocator> cmdAllocator;
+ComPtr<ID3D12CommandQueue> cmdQueue;
+ComPtr<ID3D12Fence> queueFence;
+ComPtr<ID3D12DescriptorHeap> descriptorHeapRTV;
+ComPtr<ID3D12Resource> renderTarget[2];
 ComPtr<ID3D12RootSignature> rootSignature;
 ComPtr<ID3D12PipelineState> pipelineState;
 HANDLE hFenceEvent;
 
-ComPtr<ID3D12GraphicsCommandList> commandList;
-D3D12_CPU_DESCRIPTOR_HANDLE descriptorRTV; // 従来のRenderTargetViewみたいなもの.
+ComPtr<ID3D12GraphicsCommandList> cmdList;
+D3D12_CPU_DESCRIPTOR_HANDLE handleRTV[2];
 ComPtr<ID3D12Resource> vertexBuffer;
 D3D12_VERTEX_BUFFER_VIEW vertexView;
 
-void AddResourceBarrier( 
-    ID3D12GraphicsCommandList* command, 
-    ID3D12Resource* pResource,
-    D3D12_RESOURCE_USAGE before,
-    D3D12_RESOURCE_USAGE after
-    );
+void SetResourceBarrier(
+    ID3D12GraphicsCommandList* commandList, 
+    ID3D12Resource* resource, 
+    D3D12_RESOURCE_STATES before, 
+    D3D12_RESOURCE_STATES after);
 
 // DirectX12の初期化関数.
 BOOL InitializeDX12() 
 {
 	HRESULT hr;
-	D3D12_CREATE_DEVICE_FLAG dxflags = D3D12_CREATE_DEVICE_DEBUG;
-#ifndef _DEBUG
-	dxflags = D3D12_CREATE_DEVICE_NONE;
+    UINT flagsDXGI = 0;
+    ID3D12Debug* debug = nullptr;
+
+#ifdef _DEBUG
+    D3D12GetDebugInterface(IID_PPV_ARGS(&debug));
+    if (debug) {
+        debug->EnableDebugLayer();
+        debug->Release();
+        debug = nullptr;
+    }
+    flagsDXGI |= DXGI_CREATE_FACTORY_DEBUG;
 #endif
-	hr = D3D12CreateDevice(
-		nullptr,
-		D3D_DRIVER_TYPE_HARDWARE,
-		dxflags,
-		D3D_FEATURE_LEVEL_11_1,
-		D3D12_SDK_VERSION,
-		IID_PPV_ARGS(dxDevice.GetAddressOf())
-		);
-	
-	if (FAILED(hr)) {
-		MessageBoxW(NULL, L"D3D12CreateDevice() Failed.", L"ERROR", MB_OK);
-		return FALSE;
-	}
+    hr = CreateDXGIFactory2(flagsDXGI, IID_PPV_ARGS(dxgiFactory.ReleaseAndGetAddressOf()));
+    if (FAILED(hr)) {
+        OutputDebugString(L"Failed CreateDXGIFactory2\n");
+        return FALSE;
+    }
+    ComPtr<IDXGIAdapter> adapter;
+    hr = dxgiFactory->EnumAdapters(0, adapter.GetAddressOf());
+    if (FAILED(hr)) {
+        return FALSE;
+    }
+    // デバイス生成.
+    // D3D12は 最低でも D3D_FEATURE_LEVEL_11_0 を要求するようだ.
+    hr = D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(dxDevice.GetAddressOf()));
+    if (FAILED(hr)) {
+        MessageBoxW(NULL, L"D3D12CreateDevice() Failed.", L"ERROR", MB_OK);
+        return FALSE;
+    }
+    D3D12_FEATURE_DATA_D3D12_OPTIONS options;
+    hr = dxDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, (void*)&options, sizeof(options));
+    if (FAILED(hr)) {
+        MessageBoxW(NULL, L"CheckFeatureSupport() Failed.", L"ERROR", MB_OK);
+        return FALSE;
+    }
 
-	D3D12_FEATURE_DATA_D3D12_OPTIONS options;
-	hr = dxDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, (void*)&options, sizeof(options));
-	if (FAILED(hr)) {
-		MessageBoxW(NULL, L"CheckFeatureSupport() Failed.", L"ERROR", MB_OK);
-		return FALSE;
-	}
-	// SwapChain作成時に必要になるのでコマンドキューを作成.
-	hr = dxDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(commandAllocator.GetAddressOf()) );
-	if (FAILED(hr)) {
-		MessageBoxW(NULL, L"CreateCommandAllocator() Failed.", L"ERROR", MB_OK);
-		return FALSE;
-	}
-	D3D12_COMMAND_QUEUE_DESC descCommandQueue;
-	ZeroMemory(&descCommandQueue, sizeof(descCommandQueue));
-	descCommandQueue.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-	hr = dxDevice->CreateCommandQueue( &descCommandQueue, IID_PPV_ARGS(commandQueue.GetAddressOf()));
+    // コマンドアロケータを生成.
+    hr = dxDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(cmdAllocator.GetAddressOf()));
+    if (FAILED(hr)) {
+        MessageBoxW(NULL, L"CreateCommandAllocator() Failed.", L"ERROR", MB_OK);
+        return FALSE;
+    }
+    // コマンドキューを生成.
+    D3D12_COMMAND_QUEUE_DESC descCommandQueue;
+    ZeroMemory(&descCommandQueue, sizeof(descCommandQueue));
+    descCommandQueue.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    descCommandQueue.Priority = 0;
+    descCommandQueue.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+    hr = dxDevice->CreateCommandQueue(&descCommandQueue, IID_PPV_ARGS(cmdQueue.GetAddressOf()));
+    if (FAILED(hr)) {
+        OutputDebugString(L"Failed CreateCommandQueue\n");
+        return FALSE;
+    }
+    // コマンドキュー用のフェンスを準備.
+    hFenceEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+    hr = dxDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(queueFence.GetAddressOf()));
+    if (FAILED(hr)) {
+        OutputDebugString(L"Failed CreateFence\n");
+        return FALSE;
+    }
 
-	// DXGIの初期化を行う.
-	DXGI_SWAP_CHAIN_DESC descSwapChain;
-	ZeroMemory(&descSwapChain, sizeof(descSwapChain));
-	descSwapChain.BufferCount = 2;
-	descSwapChain.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-	descSwapChain.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-	descSwapChain.OutputWindow = g_hWnd;
-	descSwapChain.SampleDesc.Count = 1;
-	descSwapChain.Windowed = TRUE;
-	descSwapChain.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
-	descSwapChain.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-
-	ComPtr<IDXGIFactory3> dxgiFactory;
-	hr = CreateDXGIFactory2(0, IID_PPV_ARGS(dxgiFactory.GetAddressOf()));
-	if (FAILED(hr)) {
-		MessageBoxW(NULL, L"CreateDXGIFactory2() failed.", L"ERROR", MB_OK);
-		return FALSE;
-	}
-	hr = dxgiFactory->CreateSwapChain( commandQueue.Get(), &descSwapChain, (IDXGISwapChain**)(swapChain.GetAddressOf()));
-	if (FAILED(hr)) {
-		MessageBoxW(NULL, L"CreateSwapChain() failed.", L"ERROR", MB_OK);
-		return FALSE;
-	}
+    // スワップチェインを生成.
+    DXGI_SWAP_CHAIN_DESC descSwapChain;
+    ZeroMemory(&descSwapChain, sizeof(descSwapChain));
+    descSwapChain.BufferCount = 2;
+    descSwapChain.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    descSwapChain.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    descSwapChain.OutputWindow = g_hWnd;
+    descSwapChain.SampleDesc.Count = 1;
+    descSwapChain.Windowed = TRUE;
+    descSwapChain.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    descSwapChain.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+    hr = dxgiFactory->CreateSwapChain(cmdQueue.Get(), &descSwapChain, (IDXGISwapChain**)swapChain.GetAddressOf());
+    if (FAILED(hr)) {
+        OutputDebugString(L"Failed CreateSwapChain\n");
+        return FALSE;
+    }
+    // コマンドリストの作成.
+    hr = dxDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmdAllocator.Get(), nullptr, IID_PPV_ARGS(cmdList.GetAddressOf()));
+    if (FAILED(hr)) {
+        OutputDebugString(L"Failed CreateCommandList\n");
+        return FALSE;
+    }
 
 	// バックバッファのターゲット用に１つで作成.
-	D3D12_DESCRIPTOR_HEAP_DESC descDescriptorHeap;
-	ZeroMemory(&descDescriptorHeap, sizeof(descDescriptorHeap));
-	descDescriptorHeap.NumDescriptors = 1;
-	descDescriptorHeap.Type = D3D12_RTV_DESCRIPTOR_HEAP;
-	descDescriptorHeap.Flags = D3D12_DESCRIPTOR_HEAP_NONE;
-	hr = dxDevice->CreateDescriptorHeap(&descDescriptorHeap, IID_PPV_ARGS(descriptorHeap.GetAddressOf()));
-	if (FAILED(hr)) {
-		MessageBoxW(NULL, L"CreateDescriptorHeap() failed.", L"ERROR", MB_OK);
-		return FALSE;
-	}
-	// コマンドキューの同期用オブジェクトを作成.
-	hFenceEvent = CreateEventA( nullptr, FALSE, FALSE, nullptr);
-	hr = dxDevice->CreateFence(0, D3D12_FENCE_MISC_NONE, IID_PPV_ARGS(commandFence.GetAddressOf()));
+    // ディスクリプタヒープ(RenderTarget用)の作成.
+    D3D12_DESCRIPTOR_HEAP_DESC descHeap;
+    ZeroMemory(&descHeap, sizeof(descHeap));
+    descHeap.NumDescriptors = 2;
+    descHeap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    descHeap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    hr = dxDevice->CreateDescriptorHeap(&descHeap, IID_PPV_ARGS(descriptorHeapRTV.GetAddressOf()));
+    if (FAILED(hr)) {
+        MessageBoxW(NULL, L"CreateDescriptorHeap() failed.", L"ERROR", MB_OK);
+        return FALSE;
+    }
 
-	// バックバッファをプライマリのターゲットとして.
-	hr = swapChain->GetBuffer(0, IID_PPV_ARGS(renderTargetPrimary.GetAddressOf()));
-	if (FAILED(hr)) {
-		MessageBoxW(NULL, L"swapChain->GetBuffer() failed.", L"ERROR", MB_OK);
-		return FALSE;
-	}
-	descriptorRTV = descriptorHeap->GetCPUDescriptorHandleForHeapStart();
-	dxDevice->CreateRenderTargetView(renderTargetPrimary.Get(), nullptr, descriptorRTV);
+    // レンダーターゲット(プライマリ用)の作成.
+    UINT strideHandleBytes = dxDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    for (UINT i = 0;i < descSwapChain.BufferCount;++i) {
+        hr = swapChain->GetBuffer(i, IID_PPV_ARGS(renderTarget[i].GetAddressOf()));
+        if (FAILED(hr)) {
+            OutputDebugString(L"Failed swapChain->GetBuffer\n");
+            return FALSE;
+        }
+        handleRTV[i] = descriptorHeapRTV->GetCPUDescriptorHandleForHeapStart();
+        handleRTV[i].ptr += i*strideHandleBytes;
+        dxDevice->CreateRenderTargetView(renderTarget[i].Get(), nullptr, handleRTV[i]);
+    }
 
 	return TRUE;
 }
@@ -306,10 +333,11 @@ BOOL ResourceSetupDX12()
 {
 	HRESULT hr;
 	// PipelineStateのための RootSignature の作成.
-	D3D12_ROOT_SIGNATURE descRootSignature;
-	descRootSignature.Flags = D3D12_ROOT_SIGNATURE_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+	D3D12_ROOT_SIGNATURE_DESC descRootSignature;
+    ZeroMemory(&descRootSignature, sizeof(descRootSignature));
+	descRootSignature.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 	ComPtr<ID3DBlob> rootSigBlob, errorBlob;
-	hr = D3D12SerializeRootSignature(&descRootSignature, D3D_ROOT_SIGNATURE_V1, rootSigBlob.GetAddressOf(), errorBlob.GetAddressOf());
+	hr = D3D12SerializeRootSignature(&descRootSignature, D3D_ROOT_SIGNATURE_VERSION_1, rootSigBlob.GetAddressOf(), errorBlob.GetAddressOf());
 	hr = dxDevice->CreateRootSignature(0, rootSigBlob->GetBufferPointer(), rootSigBlob->GetBufferSize(), IID_PPV_ARGS(rootSignature.GetAddressOf()));
 	if (FAILED(hr)) {
 		MessageBoxW(NULL, L"CreateRootSignature() failed.", L"ERROR", MB_OK);
@@ -337,8 +365,8 @@ BOOL ResourceSetupDX12()
 
 	// 今回のための頂点レイアウト.
 	D3D12_INPUT_ELEMENT_DESC descInputElements[] = {
-		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_PER_VERTEX_DATA, 0 },
-		{ "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0,12, D3D12_INPUT_PER_VERTEX_DATA, 0 },
+		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0,12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 	};
 
 	// PipelineStateオブジェクトの作成.
@@ -356,31 +384,46 @@ BOOL ResourceSetupDX12()
 	descPipelineState.NumRenderTargets = 1;
 	descPipelineState.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
 	descPipelineState.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-	descPipelineState.RasterizerState = CD3D12_RASTERIZER_DESC(D3D12_DEFAULT);
-	descPipelineState.DepthStencilState = CD3D12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
-	descPipelineState.BlendState = CD3D12_BLEND_DESC(D3D12_DEFAULT);
+    descPipelineState.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    descPipelineState.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    descPipelineState.RasterizerState.DepthClipEnable = TRUE;
+    descPipelineState.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+    descPipelineState.BlendState.RenderTarget[0].BlendEnable = FALSE;
+    descPipelineState.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
+    descPipelineState.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_ZERO;
+    descPipelineState.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    descPipelineState.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 	descPipelineState.DepthStencilState.DepthEnable = FALSE;
 	hr = dxDevice->CreateGraphicsPipelineState(&descPipelineState, IID_PPV_ARGS(pipelineState.GetAddressOf()));
 	if (FAILED(hr)) {
 		MessageBoxW(NULL, L"CreateGraphicsPipelineState() failed.", L"ERROR", MB_OK);
 		return FALSE;
 	}
-	// 今回用のコマンドリストをここで作成.
-	hr = dxDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocator.Get(), pipelineState.Get(), IID_PPV_ARGS(commandList.GetAddressOf()));
-	if (FAILED(hr)) {
-		MessageBoxW(NULL, L"CreateCommandList() failed.", L"ERROR", MB_OK);
-		return FALSE;
-	}
-	commandList->Close(); // 後で投入する.
-	commandAllocator->Reset();
-	commandList->Reset(commandAllocator.Get(), nullptr);
 
     // 頂点データの準備.
+    D3D12_HEAP_PROPERTIES heapProps;
+    D3D12_RESOURCE_DESC   descResourceVB;
+    ZeroMemory(&heapProps, sizeof(heapProps));
+    ZeroMemory(&descResourceVB, sizeof(descResourceVB));
+    heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+    heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heapProps.CreationNodeMask = 1;
+    heapProps.VisibleNodeMask = 1;
+    descResourceVB.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    descResourceVB.Width = sizeof(triangleVertices);
+    descResourceVB.Height = 1;
+    descResourceVB.DepthOrArraySize = 1;
+    descResourceVB.MipLevels = 1;
+    descResourceVB.Format = DXGI_FORMAT_UNKNOWN;
+    descResourceVB.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    descResourceVB.SampleDesc.Count = 1;
+
     hr = dxDevice->CreateCommittedResource(
-        &CD3D12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
-        D3D12_HEAP_MISC_NONE,
-        &CD3D12_RESOURCE_DESC::Buffer(sizeof(triangleVertices)),
-        D3D12_RESOURCE_USAGE_GENERIC_READ,
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &descResourceVB,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
         nullptr,
         IID_PPV_ARGS(vertexBuffer.GetAddressOf())
         );
@@ -403,63 +446,58 @@ BOOL ResourceSetupDX12()
     vertexView.StrideInBytes = sizeof(MyVertex);
     vertexView.SizeInBytes = sizeof(triangleVertices);
 
-	return TRUE;
+    return TRUE;
 }
 
 void RenderDX12()
 {
+    int targetIndex = swapChain->GetCurrentBackBufferIndex();
 	// まずはターゲットのクリア処理
 	float clearColor[4] = { 0.2f, 0.45f, 0.8f, 0.0f };
 	D3D12_VIEWPORT viewPort = { 0.0f, 0.0f, WINDOW_WIDTH, WINDOW_HEIGHT, 0.0f, 1.0f };
 	D3D12_RECT rect = { 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT };
-    AddResourceBarrier(commandList.Get(), renderTargetPrimary.Get(), D3D12_RESOURCE_USAGE_PRESENT, D3D12_RESOURCE_USAGE_RENDER_TARGET);
-    commandList->SetGraphicsRootSignature(rootSignature.Get());
-    commandList->SetPipelineState(pipelineState.Get());
-	commandList->RSSetViewports(1, &viewPort);
-	commandList->RSSetScissorRects(1, &rect);
-	commandList->ClearRenderTargetView(descriptorRTV, clearColor, nullptr, 0);
-	commandList->SetRenderTargets(&descriptorRTV, FALSE, 1, nullptr);
+    SetResourceBarrier(cmdList.Get(), renderTarget[targetIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    cmdList->SetGraphicsRootSignature(rootSignature.Get());
+    cmdList->SetPipelineState(pipelineState.Get());
+	cmdList->RSSetViewports(1, &viewPort);
+	cmdList->RSSetScissorRects(1, &rect);
+	cmdList->ClearRenderTargetView(handleRTV[targetIndex], clearColor, 0, nullptr );
+	cmdList->OMSetRenderTargets(1, &handleRTV[targetIndex], TRUE, nullptr);
 
     // 頂点データをセット.
-    commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    commandList->SetVertexBuffers(0, &vertexView, 1);
-    commandList->DrawInstanced(3, 1, 0, 0);
-
+    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    cmdList->IASetVertexBuffers(0, 1, &vertexView );
+    cmdList->DrawInstanced(3, 1, 0, 0);
 
 	// ターゲットをPresent用のリソースとして状態変更.
-    AddResourceBarrier(commandList.Get(), renderTargetPrimary.Get(), D3D12_RESOURCE_USAGE_RENDER_TARGET, D3D12_RESOURCE_USAGE_PRESENT );
-	commandList->Close();
+    SetResourceBarrier(cmdList.Get(), renderTarget[targetIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT );
+	cmdList->Close();
 
 	// 上記で積んだコマンドを実行する.
-	commandQueue->ExecuteCommandLists(1, CommandListCast(commandList.GetAddressOf()));
+    ID3D12CommandList* pCommandList = cmdList.Get();
+	cmdQueue->ExecuteCommandLists(1, &pCommandList );
 	swapChain->Present(1, 0);
-	WaitForCommandQueue();
-	commandAllocator->Reset();
-	commandList->Reset(commandAllocator.Get(), nullptr);
+	WaitForCommandQueue(cmdQueue.Get());
+	cmdAllocator->Reset();
+	cmdList->Reset(cmdAllocator.Get(), nullptr);
 }
 
-void WaitForCommandQueue()
-{
-	commandFence->Signal(0);
-	commandFence->SetEventOnCompletion(1, hFenceEvent);
-	commandQueue->Signal(commandFence.Get(), 1);
-	WaitForSingleObject(hFenceEvent, INFINITE);
+void WaitForCommandQueue(ID3D12CommandQueue* pCommandQueue) {
+    queueFence->Signal(0);
+    queueFence->SetEventOnCompletion(1, hFenceEvent);
+    pCommandQueue->Signal(queueFence.Get(), 1);
+    WaitForSingleObject(hFenceEvent, INFINITE);
 }
 
 // リソース状態変更のための関数.
-void AddResourceBarrier(
-    ID3D12GraphicsCommandList* command,
-    ID3D12Resource* pResource,
-    D3D12_RESOURCE_USAGE before,
-    D3D12_RESOURCE_USAGE after
-    )
+void SetResourceBarrier(ID3D12GraphicsCommandList* commandList, ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
 {
-    D3D12_RESOURCE_BARRIER_DESC desc;
-    ZeroMemory(&desc, sizeof(desc));
-    desc.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    desc.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    desc.Transition.pResource = pResource;
-    desc.Transition.StateBefore = before;
-    desc.Transition.StateAfter = after;
-    command->ResourceBarrier(1, &desc);
+    D3D12_RESOURCE_BARRIER descBarrier;
+    ZeroMemory(&descBarrier, sizeof(descBarrier));
+    descBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    descBarrier.Transition.pResource = resource;
+    descBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    descBarrier.Transition.StateBefore = before;
+    descBarrier.Transition.StateAfter = after;
+    commandList->ResourceBarrier(1, &descBarrier);
 }
