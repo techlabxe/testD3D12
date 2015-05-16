@@ -27,12 +27,18 @@
     <ClInclude Include="triangleDX12.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="..\util\d3d12_util.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="triangleDX12.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\util\d3d12_util.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
