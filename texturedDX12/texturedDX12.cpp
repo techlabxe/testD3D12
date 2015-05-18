@@ -340,8 +340,10 @@ BOOL InitializeDX12(HWND hWnd)
     box.right = 256;
     box.bottom = 256;
     box.back = 1;
-    void* p = malloc(256 * 256 * 4);
-    memset(p, 0xFF, 256 * 256 * 4);
+    uint32_t* p = (uint32_t*)malloc(256 * 256 * sizeof(uint32_t) );
+    for (int i = 0;i < 256 * 256;++i) {
+      p[i] = 0xFFFF0000; // Â‚É“h‚Á‚Ä‚Ý‚é.
+    }
     texture->WriteToSubresource(0, &box, p, 4 * 256, 4 * 256 * 256);
   }
 
