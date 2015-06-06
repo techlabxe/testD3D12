@@ -5,6 +5,7 @@
 #include <DirectXMath.h>
 #include <d3d12.h>
 #include <dxgi1_4.h>
+#include <vector>
 #include "../util/d3d12_util.h"
 
 #define WINDOW_WIDTH  640
@@ -317,35 +318,6 @@ BOOL InitializeDX12(HWND hWnd)
     );
   handleDSV = descriptorHeapDSB->GetCPUDescriptorHandleForHeapStart();
 
-  D3D12_RESOURCE_DESC descResourceTex;
-  D3D12_HEAP_PROPERTIES heapProps;
-  ZeroMemory(&heapProps, sizeof(heapProps));
-  ZeroMemory(&descResourceTex, sizeof(descResourceTex));
-  heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-  heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-  heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-  heapProps.CreationNodeMask = 0;
-  heapProps.VisibleNodeMask = 0;
-  descResourceTex.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-  descResourceTex.Width = 256;
-  descResourceTex.Height = 256;
-  descResourceTex.DepthOrArraySize = 1;
-  descResourceTex.MipLevels = 1;
-  descResourceTex.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-  descResourceTex.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-  descResourceTex.SampleDesc.Count = 1;
-  hr = dxDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &descResourceTex, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(texture.GetAddressOf()));
-  {
-    D3D12_BOX box = { 0 };
-    box.right = 256;
-    box.bottom = 256;
-    box.back = 1;
-    uint32_t* p = (uint32_t*)malloc(256 * 256 * sizeof(uint32_t) );
-    for (int i = 0;i < 256 * 256;++i) {
-      p[i] = 0xFFFF0000; // 青に塗ってみる.
-    }
-    texture->WriteToSubresource(0, &box, p, 4 * 256, 4 * 256 * 256);
-  }
 
   // シェーダーリソースビューのためのヒープディスクリプタ.
   D3D12_DESCRIPTOR_HEAP_DESC descDescriptorHeapSRV;
@@ -528,6 +500,57 @@ BOOL ResourceSetupDX12()
     constantBuffer->Unmap(0, nullptr);
   }
 
+  // テクスチャの準備.
+  D3D12_RESOURCE_DESC descResourceTex;
+  D3D12_HEAP_PROPERTIES heapProps;
+  ZeroMemory(&heapProps, sizeof(heapProps));
+  ZeroMemory(&descResourceTex, sizeof(descResourceTex));
+  heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+  heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+  heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+  heapProps.CreationNodeMask = 0;
+  heapProps.VisibleNodeMask = 0;
+  descResourceTex.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+  descResourceTex.Width = 256;
+  descResourceTex.Height = 256;
+  descResourceTex.DepthOrArraySize = 1;
+  descResourceTex.MipLevels = 1;
+  descResourceTex.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  descResourceTex.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+  descResourceTex.SampleDesc.Count = 1;
+  hr = dxDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &descResourceTex, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(texture.GetAddressOf()));
+  texture->SetName(L"TEST_TEX");
+#if 0
+  {
+    D3D12_BOX box = { 0 };
+    box.right = 256;
+    box.bottom = 256;
+    box.back = 1;
+    uint32_t* p = (uint32_t*)malloc(256 * 256 * sizeof(uint32_t));
+    for (int i = 0;i < 256 * 256;++i) {
+      p[i] = 0xFFFF0000; // 青に塗ってみる.
+    }
+    texture->WriteToSubresource(0, &box, p, 4 * 256, 4 * 256 * 256);
+  }
+#else
+  {
+    // 今ロードするテクスチャの素性を知っているため解像度やデータ位置を決め打ち.
+    const int ddsHeaderSize = 0x80;
+    FILE* fp;
+    fopen_s(&fp, "sakura.dds", "rb");
+    fseek(fp, 0, SEEK_END);
+    int texsize = (int)ftell(fp);
+    texsize -= ddsHeaderSize;
+    fseek(fp, ddsHeaderSize, SEEK_SET);
+    std::vector<uint8_t> data(texsize);
+    fread(&data[0], 1, texsize, fp);
+    fclose(fp);
+    D3D12_BOX box = { 0,0, 0,256,256,1 };
+    texture->WriteToSubresource(0, &box, &data[0], 4 * 256, 4 * 256 * 256);
+  }
+#endif
+
+
   UINT strideSize = dxDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
   D3D12_CONSTANT_BUFFER_VIEW_DESC descCBV;
@@ -552,7 +575,7 @@ BOOL ResourceSetupDX12()
   handleSampler = descriptorHeapSMP->GetCPUDescriptorHandleForHeapStart();
   D3D12_SAMPLER_DESC descSampler;
   ZeroMemory(&descSampler, sizeof(descSampler));
-  descSampler.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+  descSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
   descSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
   descSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
   descSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
