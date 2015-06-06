@@ -436,9 +436,9 @@ void RenderDX12()
 }
 
 void WaitForCommandQueue(ID3D12CommandQueue* pCommandQueue) {
-  queueFence->Signal(0);
-  queueFence->SetEventOnCompletion(1, hFenceEvent);
-  pCommandQueue->Signal(queueFence.Get(), 1);
+  static UINT64 frames = 0;
+  queueFence->SetEventOnCompletion( frames, hFenceEvent);
+  pCommandQueue->Signal(queueFence.Get(), frames);
   WaitForSingleObject(hFenceEvent, INFINITE);
+  frames++;
 }
-

@@ -599,7 +599,6 @@ void RenderDX12()
   d3d12util::SetResourceBarrier(cmdList.Get(), renderTarget[targetIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
   cmdList->SetGraphicsRootSignature(rootSignature.Get());
   cmdList->SetPipelineState(pipelineState.Get());
-  //cmdList->SetGraphicsRootConstantBufferView(0, constantBuffer->GetGPUVirtualAddress());
   cmdList->SetDescriptorHeaps(_countof(heaps), heaps);
   cmdList->SetGraphicsRootDescriptorTable(0, descriptorHeapSRVCBV->GetGPUDescriptorHandleForHeapStart());
   cmdList->SetGraphicsRootDescriptorTable(1, descriptorHeapSMP->GetGPUDescriptorHandleForHeapStart() );
@@ -632,9 +631,10 @@ void RenderDX12()
 }
 
 void WaitForCommandQueue(ID3D12CommandQueue* pCommandQueue) {
-  queueFence->Signal(0);
-  queueFence->SetEventOnCompletion(1, hFenceEvent);
-  pCommandQueue->Signal(queueFence.Get(), 1);
+  static UINT64 frames = 0;
+  queueFence->SetEventOnCompletion(frames, hFenceEvent);
+  pCommandQueue->Signal(queueFence.Get(), frames);
   WaitForSingleObject(hFenceEvent, INFINITE);
+  frames++;
 }
 

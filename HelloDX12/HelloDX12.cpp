@@ -298,10 +298,11 @@ void SetResourceBarrier(ID3D12GraphicsCommandList* commandList, ID3D12Resource* 
 }
 
 void WaitForCommandQueue(ID3D12CommandQueue* pCommandQueue) {
-	queueFence->Signal(0);
-	queueFence->SetEventOnCompletion(1, hFenceEvent);
-	pCommandQueue->Signal(queueFence.Get(), 1);
-	WaitForSingleObject(hFenceEvent, INFINITE);
+  static UINT64 frames = 0;
+  queueFence->SetEventOnCompletion(frames, hFenceEvent);
+  pCommandQueue->Signal(queueFence.Get(), frames);
+  WaitForSingleObject(hFenceEvent, INFINITE);
+  frames++;
 }
 
 void OnRender() {
